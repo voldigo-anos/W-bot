@@ -1,6 +1,6 @@
 {
-  "name": "knightbot",
-  "version": "1.0.0",
+  "name": "Nix-Bot",
+  "version": "0.0.1",
   "description": "WhatsApp Bot",
   "main": "index.js",
   "scripts": {
@@ -18,7 +18,7 @@
   "keywords": [
     "whatsapp-bot"
   ],
-  "author": "",
+  "author": "ArYAN",
   "license": "ISC",
   "dependencies": {
     "@adiwajshing/keyed-db": "^0.2.4",
