@@ -25,7 +25,7 @@ module.exports = {
     author: "ArYAN",
     countDown: 3,
     role: 1,
-    prefix: true,
+    nixPrefix: true,
     category: "moderation",
     description: "Manage and enforce link-blocking policies in your group.",
     guide: {
