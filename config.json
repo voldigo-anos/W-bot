@@ -32,7 +32,7 @@
     "mongoURI": ""
   },
   "storeType": "JSON",
-  "inbox": false,
+  "inbox": true,
   "features": {
     "antidelete": false,
     "autoread": false,
