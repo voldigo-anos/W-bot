@@ -3,66 +3,98 @@ const axios = require("axios");
 const fs = require("fs");
 const path = require("path");
 
-const nixConfig = global.NixBot.apis.nixConfig;
+const CACHE = path.join(__dirname, "cache");
+if (!fs.existsSync(CACHE)) fs.mkdirSync(CACHE, { recursive: true });
 
 module.exports = {
   config: {
-    name: "youtube",
-    aliases: ["ytb"],
-    version: "1.2.0",
-    author: "ArYAN",
+    name: "ytb",
+    aliases: ["youtube"],
+    version: "1.1.1",
+    author: "Christus",
     countDown: 5,
     role: 0,
     category: "media",
     description: {
-      en: "Search and download YouTube video or audio"
+      en: "Search and download YouTube videos/audios"
     },
+    nixPrefix: true,
     guide: {
-      en: "{pn} -v [query/url] (for video)\n{pn} -a [query/url] (for audio)"
+      en: "   {pn} -v <query> - Download video\n"
+        + "   {pn} -a <query> - Download audio\n"
+        + "   {pn} -u <url> -v|-a - Download from URL directly"
     }
   },
 
   onStart: async function ({ sock, chatId, args, event, senderId, reply, prefix, commandName }) {
     const type = args[0]?.toLowerCase();
-    if (!["-v", "-a"].includes(type)) return reply(`Usage: ${prefix}${commandName} [-v|-a] <query/url>`);
+    if (!type) return reply(`❌ Usage: ${prefix}${commandName} [-v|-a|-u] ...`);
 
-    const query = args.slice(1).join(" ");
-    if (!query) return reply("Please provide a search query or link.");
+    // --- Téléchargement direct depuis une URL ---
+    if (type === "-u") {
+      const url = args[1];
+      const mode = args[2] || "-v";
+      if (!url || !url.startsWith("http")) return reply("❌ Veuillez fournir une URL YouTube valide.");
+      if (!["-v", "-a"].includes(mode)) return reply("❌ Précisez -v (vidéo) ou -a (audio) après l'URL.");
 
-    if (query.startsWith("http")) {
-      const wait = await sock.sendMessage(chatId, { text: "Downloading, please wait..." }, { quoted: event });
-      await downloadMedia(query, type === "-v" ? "mp4" : "mp3", sock, chatId, event);
-      try { await sock.sendMessage(chatId, { delete: wait.key }); } catch (e) {}
+      const waitMsg = await sock.sendMessage(chatId, {
+        text: `⏳ Téléchargement ${mode === "-v" ? "vidéo" : "audio"} en cours...`
+      }, { quoted: event });
+
+      try {
+        if (mode === "-a") {
+          await downloadAudio(url, sock, chatId, event);
+        } else {
+          await downloadVideo(url, sock, chatId, event);
+        }
+        await sock.sendMessage(chatId, { delete: waitMsg.key });
+      } catch (e) {
+        console.error("[YTB] Download error:", e);
+        await sock.sendMessage(chatId, {
+          text: "❌ Échec du téléchargement.",
+          edit: waitMsg.key
+        });
+      }
       return;
     }
 
+    // --- Recherche et sélection ---
+    if (!["-v", "-a"].includes(type))
+      return reply(`❌ Utilisez -v (vidéo) ou -a (audio).\nExemple: ${prefix}${commandName} -v never gonna give you up`);
+
+    const query = args.slice(1).join(" ");
+    if (!query) return reply(`❌ Veuillez fournir un terme de recherche.`);
+
     try {
       const search = await yts(query);
-      const results = search.videos.slice(0, 6);
-      if (results.length === 0) return reply("No results found.");
+      const results = search.videos.slice(0, 5);
+      if (results.length === 0) return reply("❌ Aucun résultat trouvé.");
 
-      let msg = "YouTube Search Results:\n\n";
+      // Préparation du message de sélection
+      let msg = "🎬 *Résultats de recherche YouTube*\n\n";
       results.forEach((v, i) => {
-        msg += `${i + 1}. ${v.title}\n   Duration: ${v.timestamp}\n\n`;
+        msg += `${i + 1}. ${v.title}\n   ⏱ ${v.timestamp}\n\n`;
       });
-      msg += "Reply with the number (1-6) to download.";
+      msg += "📩 *Répondez avec le numéro (1-5) pour télécharger.*";
 
+      // Envoi du premier thumbnail avec la légende
       const sent = await sock.sendMessage(chatId, {
         image: { url: results[0].thumbnail },
         caption: msg
       }, { quoted: event });
 
+      // Stockage des données pour onReply
       global.NixBot.onReply.push({
-        commandName: "youtube",
+        commandName: "ytb",
         messageID: sent.key.id,
         author: senderId,
         results: results,
-        downloadType: type
+        downloadType: type  // "-v" ou "-a"
       });
 
     } catch (err) {
-      console.error("[YTB] Search error:", err.message);
-      return reply("Search failed: " + err.message);
+      console.error("[YTB] Search error:", err);
+      return reply("❌ Erreur lors de la recherche : " + err.message);
     }
   },
 
@@ -71,19 +103,23 @@ module.exports = {
     if (!repliedMsgId) return;
 
     const data = global.NixBot.onReply.find(
-      r => r.commandName === "youtube" && r.author === senderId && r.messageID === repliedMsgId
+      r => r.commandName === "ytb" && r.author === senderId && r.messageID === repliedMsgId
     );
     if (!data) return;
 
     const text = message.message?.conversation || message.message?.extendedTextMessage?.text || "";
     const index = parseInt(text) - 1;
-    if (isNaN(index) || index < 0 || index >= data.results.length) return;
+    if (isNaN(index) || index < 0 || index >= data.results.length) {
+      return sock.sendMessage(chatId, { text: "❌ Choix invalide." }, { quoted: event });
+    }
 
     const selected = data.results[index];
 
+    // Supprimer les données pour éviter une seconde utilisation
     const idx = global.NixBot.onReply.findIndex(r => r.messageID === data.messageID);
     if (idx !== -1) global.NixBot.onReply.splice(idx, 1);
 
+    // Supprimer le message de sélection
     try {
       await sock.sendMessage(chatId, {
         delete: {
@@ -94,61 +130,73 @@ module.exports = {
       });
     } catch (e) {}
 
-    const wait = await sock.sendMessage(chatId, { text: `Downloading: ${selected.title}...` }, { quoted: event });
-    await downloadMedia(selected.url, data.downloadType === "-v" ? "mp4" : "mp3", sock, chatId, event);
-    try { await sock.sendMessage(chatId, { delete: wait.key }); } catch (e) {}
+    const waitMsg = await sock.sendMessage(chatId, {
+      text: `⏳ Téléchargement de "${selected.title}"...`
+    }, { quoted: event });
+
+    try {
+      if (data.downloadType === "-a") {
+        await downloadAudio(selected.url, sock, chatId, event);
+      } else {
+        await downloadVideo(selected.url, sock, chatId, event);
+      }
+      await sock.sendMessage(chatId, { delete: waitMsg.key });
+    } catch (e) {
+      console.error("[YTB] Download error:", e);
+      await sock.sendMessage(chatId, {
+        text: "❌ Échec du téléchargement.",
+        edit: waitMsg.key
+      });
+    }
   }
 };
 
-async function downloadMedia(url, format, sock, chatId, event) {
-  const tmpDir = path.join(__dirname, "cache");
-  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+// ---------- Fonctions de téléchargement ----------
+async function downloadVideo(url, sock, chatId, event) {
+  // Nouvel endpoint : /api/fahh?url=...&format=mp4
+  const apiUrl = `https://downvid.onrender.com/api/fahh?url=${encodeURIComponent(url)}&format=mp4`;
+  const { data } = await axios.get(apiUrl);
+  if (data.status !== "success" || !data.downloadUrl)
+    throw new Error("L'API n'a pas retourné d'URL de téléchargement.");
 
-  try {
-    let configRes;
-    try {
-      configRes = await axios.get(nixConfig, { timeout: 10000 });
-    } catch (e) {
-      throw new Error("Failed to fetch API config.");
-    }
-    const apiData = configRes.data;
-    const baseApi = apiData.api;
-    const nixtubeApi = apiData.nixtube;
+  const filePath = path.join(CACHE, `vid_${Date.now()}.mp4`);
+  await downloadFile(data.downloadUrl, filePath);
 
-    let apiUrl;
-    if (format === "mp3") {
-      apiUrl = `${baseApi}/play?url=${encodeURIComponent(url)}`;
-    } else {
-      apiUrl = `${nixtubeApi}?url=${encodeURIComponent(url)}&type=mp4`;
-    }
+  await sock.sendMessage(chatId, {
+    video: fs.readFileSync(filePath),
+    caption: "🎥 Vidéo téléchargée",
+    mimetype: "video/mp4"
+  }, { quoted: event });
 
-    const { data } = await axios.get(apiUrl, { timeout: 30000 });
-    const downloadUrl = data.downloadUrl || data.download_url;
-    if (!downloadUrl) throw new Error("No download URL returned.");
-
-    const filePath = path.join(tmpDir, `ytb_${Date.now()}.${format}`);
-    const response = await axios.get(downloadUrl, { responseType: "arraybuffer", timeout: 120000 });
-    fs.writeFileSync(filePath, Buffer.from(response.data));
-
-    if (format === "mp3") {
-      await sock.sendMessage(chatId, {
-        audio: fs.readFileSync(filePath),
-        mimetype: "audio/mpeg",
-        fileName: `${data.title || "audio"}.mp3`,
-        ptt: false
-      }, { quoted: event });
-    } else {
-      await sock.sendMessage(chatId, {
-        video: fs.readFileSync(filePath),
-        caption: data.title || "Downloaded by NixBot",
-        mimetype: "video/mp4"
-      }, { quoted: event });
-    }
-
-    try { fs.unlinkSync(filePath); } catch (e) {}
-
-  } catch (err) {
-    console.error("[YTB] Download error:", err.message);
-    await sock.sendMessage(chatId, { text: "Download failed: " + err.message }, { quoted: event });
-  }
+  fs.unlinkSync(filePath);
 }
+
+async function downloadAudio(url, sock, chatId, event) {
+  // Nouvel endpoint : /api/fahh?url=...&format=mp3
+  const apiUrl = `https://downvid.onrender.com/api/fahh?url=${encodeURIComponent(url)}&format=mp3`;
+  const { data } = await axios.get(apiUrl);
+  if (data.status !== "success" || !data.downloadUrl)
+    throw new Error("L'API n'a pas retourné d'URL de téléchargement.");
+
+  const filePath = path.join(CACHE, `aud_${Date.now()}.mp3`);
+  await downloadFile(data.downloadUrl, filePath);
+
+  await sock.sendMessage(chatId, {
+    audio: fs.readFileSync(filePath),
+    mimetype: "audio/mpeg",
+    fileName: "audio.mp3",
+    ptt: false
+  }, { quoted: event });
+
+  fs.unlinkSync(filePath);
+}
+
+async function downloadFile(url, outputPath) {
+  const writer = fs.createWriteStream(outputPath);
+  const response = await axios.get(url, { responseType: "stream" });
+  response.data.pipe(writer);
+  return new Promise((resolve, reject) => {
+    writer.on("finish", resolve);
+    writer.on("error", reject);
+  });
+  }
